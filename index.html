@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>oqLiq 副料管理系統</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#080808;color:#ededed;font-family:'Noto Sans TC',sans-serif;font-size:13px;line-height:1.6;min-height:100vh}
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-thumb{background:#272727;border-radius:2px}
+input,select{background:#1a1a1a;border:1px solid #272727;color:#ededed;font-family:inherit;font-size:12px;padding:6px 10px;border-radius:4px;outline:none;transition:border-color .15s,box-shadow .15s;width:100%}
+input:focus,select:focus{border-color:#c8ff00;box-shadow:0 0 0 2px rgba(200,255,0,.1)}
+select option{background:#1a1a1a}
+button{font-family:'Space Mono',monospace;font-size:11px;cursor:pointer;border:none;border-radius:3px;transition:all .15s;letter-spacing:.04em}
+button:disabled{opacity:.35;cursor:not-allowed}
+.mono{font-family:'Space Mono',monospace}
+.tag{display:inline-flex;align-items:center;background:#1a1a1a;border:1px solid #272727;border-radius:2px;padding:2px 7px;font-size:10px;font-family:'Space Mono',monospace;color:#777;letter-spacing:.04em;white-space:nowrap}
+.tag-g{background:rgba(200,255,0,.07);border-color:rgba(200,255,0,.25);color:#c8ff00}
+.tag-b{background:rgba(61,136,255,.07);border-color:rgba(61,136,255,.25);color:#3d88ff}
+.tag-o{background:rgba(255,140,66,.07);border-color:rgba(255,140,66,.25);color:#ff8c42}
+hr.div{border:none;border-top:1px solid #272727;margin:14px 0}
+.scroll-x{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th{background:#1a1a1a;color:#777;font-family:'Space Mono',monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:8px 12px;text-align:left;border-bottom:1px solid #272727;white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid rgba(39,39,39,.3);vertical-align:middle}
+tr:hover td{background:rgba(26,26,26,.6)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{display:inline-block;animation:spin 1s linear infinite}
+@keyframes fadein{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.fadein{animation:fadein .2s ease}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useRef, useEffect } = React;
+
+// ── CONSTANTS ─────────────────────────────────────────────
+const MAT_CATS = ["拉鍊","扣子","布料","鬆緊帶","織帶","繡花/印花","標籤","其他"];
+const SIZES    = ["FREE","XS","S","M","L","XL","XXL"];
+const UNITS    = ["條","顆","米","碼","KG","組","片","個"];
+const COLORS_PRESET = ["Black","White","Gray","Blue","Green","Red","Navy","Khaki","Olive","Brown"];
+const NOTION_VER = "2022-06-28";
+const LS_TOKEN   = "oqliq_notion_token";
+const LS_PAGE    = "oqliq_notion_page";
+
+const P = {
+  bg:"#080808", surface:"#121212", hi:"#1a1a1a", border:"#272727",
+  accent:"#c8ff00", text:"#ededed", muted:"#777", dim:"#444",
+  red:"#ff4040", blue:"#3d88ff", orange:"#ff8c42", green:"#39d98a",
+};
+
+let _n = 0;
+const uid = () => `${++_n}_${Date.now()}`;
+
+// ── DEMO DATA ─────────────────────────────────────────────
+const mkDemo = () => ({
+  styles: [
+    { id:uid(), code:"26ST01", name:"Waffle Tee",     colors:["Black","Blue"] },
+    { id:uid(), code:"26ST03", name:"Mesh Layer Tee", colors:["Black","Gray","Blue"] },
+    { id:uid(), code:"26SS03", name:"Circuit Shirt",  colors:["Black","Gray"] },
+    { id:uid(), code:"26SP01", name:"Tech Pants",     colors:["Black"] },
+  ],
+  materials: [
+    { id:uid(), category:"拉鍊", name:'YKK 3號 閉口 8½" 黑', unit:"條", spec:"DS15B589B-X6-3#-8.5in", usagePerPiece:1 },
+    { id:uid(), category:"拉鍊", name:"YKK 5號 開尾 20cm 黑",  unit:"條", spec:"5# open-end 20cm",      usagePerPiece:2 },
+    { id:uid(), category:"扣子", name:"四合扣 黑 15mm",          unit:"顆", spec:"snap 15mm black",       usagePerPiece:4 },
+    { id:uid(), category:"布料", name:"高密網布 黑",              unit:"米", spec:"high-density mesh",     usagePerPiece:1.2 },
+    { id:uid(), category:"鬆緊帶", name:"鬆緊帶 2cm 黑",         unit:"米", spec:"elastic 2cm black",     usagePerPiece:0.5 },
+  ],
+  entries: [],
+});
+
+// ── NOTION API ────────────────────────────────────────────
+const nFetch = async (path, method="GET", body=null, token) => {
+  const opts = {
+    method,
+    headers:{
+      "Authorization":`Bearer ${token}`,
+      "Notion-Version": NOTION_VER,
+      "Content-Type":"application/json",
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`https://api.notion.com/v1${path}`, opts);
+  if (!res.ok) {
+    const e = await res.json().catch(()=>({}));
+    throw new Error(e.message || `HTTP ${res.status}`);
+  }
+  return res.json();
+};
+
+const findCodeBlock = async (pageId, token) => {
+  const data = await nFetch(`/blocks/${pageId}/children`, "GET", null, token);
+  const b = (data.results||[]).find(b=>b.type==="code");
+  return b ? b.id : null;
+};
+
+const notionLoad = async (pageId, token) => {
+  const blockId = await findCodeBlock(pageId, token);
+  if (!blockId) return null;
+  const block = await nFetch(`/blocks/${blockId}`, "GET", null, token);
+  const text = block.code?.rich_text?.[0]?.plain_text || "";
+  try { return JSON.parse(text); } catch { return null; }
+};
+
+const notionSave = async (pageId, token, db) => {
+  const payload = JSON.stringify({ v:3, ...db });
+  const blockId = await findCodeBlock(pageId, token);
+  if (blockId) await nFetch(`/blocks/${blockId}`, "DELETE", null, token);
+  await nFetch(`/blocks/${pageId}/children`, "PATCH", {
+    children:[{
+      type:"code",
+      code:{ language:"json", rich_text:[{type:"text",text:{content:payload}}] },
+    }],
+  }, token);
+};
+
+// ── UI PRIMITIVES ─────────────────────────────────────────
+const Btn = ({ children, onClick, variant="default", small, disabled, full, style:s }) => {
+  const v = {
+    default:{ background:P.hi,   color:P.text,  border:`1px solid ${P.border}` },
+    accent: { background:P.accent,color:"#000",  fontWeight:700 },
+    danger: { background:"transparent", color:P.red,   border:`1px solid rgba(255,64,64,.3)` },
+    blue:   { background:"rgba(61,136,255,.12)", color:P.blue, border:`1px solid rgba(61,136,255,.4)` },
+    green:  { background:"rgba(57,217,138,.12)", color:P.green,border:`1px solid rgba(57,217,138,.4)` },
+    ghost:  { background:"transparent", color:P.muted, border:`1px solid ${P.border}` },
+  };
+  return (
+    <button onClick={onClick} disabled={disabled}
+      style={{...v[variant], padding:small?"4px 10px":"7px 16px", width:full?"100%":"auto", ...s}}>
+      {children}
+    </button>
+  );
+};
+
+const Lbl = ({children}) => (
+  <div style={{fontSize:10,color:P.dim,letterSpacing:".08em",textTransform:"uppercase",marginBottom:5,fontFamily:"'Space Mono',monospace"}}>
+    {children}
+  </div>
+);
+
+const Card = ({children, style:s}) => (
+  <div style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:6,padding:16,...s}}>
+    {children}
+  </div>
+);
+
+const SecHead = ({children, right}) => (
+  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+    <div style={{fontSize:10,fontFamily:"'Space Mono',monospace",color:P.accent,letterSpacing:".12em",textTransform:"uppercase"}}>{children}</div>
+    {right}
+  </div>
+);
+
+const Modal = ({title, onClose, children}) => (
+  <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <div className="fadein" style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:8,width:"100%",maxWidth:520,maxHeight:"90vh",overflow:"auto"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"13px 20px",borderBottom:`1px solid ${P.border}`,position:"sticky",top:0,background:P.surface,zIndex:1}}>
+        <div className="mono" style={{fontSize:11,color:P.accent,letterSpacing:".08em"}}>{title}</div>
+        {onClose && <button onClick={onClose} style={{background:"transparent",color:P.muted,fontSize:20,border:"none",cursor:"pointer",lineHeight:1,padding:"0 4px"}}>×</button>}
+      </div>
+      <div style={{padding:20}}>{children}</div>
+    </div>
+  </div>
+);
+
+const Toggle = ({value, onChange, options}) => (
+  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+    {options.map(o => {
+      const a = value===o;
+      return <button key={o} onClick={()=>onChange(o)}
+        style={{padding:"4px 10px",borderRadius:3,fontFamily:"'Space Mono',monospace",fontSize:11,cursor:"pointer",
+          border:`1px solid ${a?P.accent:P.border}`,background:a?"rgba(200,255,0,.1)":"transparent",color:a?P.accent:P.muted}}>{o}</button>;
+    })}
+  </div>
+);
+
+const MultiToggle = ({values, onChange, options}) => (
+  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+    {options.map(o => {
+      const a = values.includes(o);
+      return <button key={o} onClick={()=>onChange(a?values.filter(v=>v!==o):[...values,o])}
+        style={{padding:"4px 10px",borderRadius:3,fontFamily:"'Space Mono',monospace",fontSize:11,cursor:"pointer",
+          border:`1px solid ${a?P.blue:P.border}`,background:a?"rgba(61,136,255,.1)":"transparent",color:a?P.blue:P.muted}}>{o}</button>;
+    })}
+  </div>
+);
+
+// ── SETUP SCREEN ──────────────────────────────────────────
+function SetupScreen({ onSave }) {
+  const [token,   setToken]   = useState("");
+  const [pageId,  setPageId]  = useState("");
+  const [pageUrl, setPageUrl] = useState("");
+
+  // 從網址自動解析 Page ID
+  const handleUrl = (val) => {
+    setPageUrl(val);
+    const match = val.match(/([a-f0-9]{32})/i);
+    if (match) setPageId(match[1]);
+  };
+
+  const canSave = token.trim().startsWith("ntn_") && pageId.length === 32;
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{width:"100%",maxWidth:480}}>
+        <div style={{marginBottom:28,textAlign:"center"}}>
+          <div className="mono" style={{fontSize:18,fontWeight:700,letterSpacing:"-.02em",marginBottom:4}}>oqLiq</div>
+          <div className="mono" style={{fontSize:10,color:P.accent,letterSpacing:".18em",marginBottom:8}}>MATERIAL TRACKER</div>
+          <div style={{fontSize:12,color:P.muted}}>首次使用 / 輸入 Notion 設定</div>
+        </div>
+
+        <Card>
+          <div style={{display:"grid",gap:16}}>
+
+            <div>
+              <Lbl>Notion API Token</Lbl>
+              <input
+                type="password"
+                value={token}
+                onChange={e=>setToken(e.target.value)}
+                placeholder="ntn_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              />
+              <div style={{fontSize:10,color:P.dim,marginTop:5,lineHeight:1.8}}>
+                從 <span style={{color:P.accent}}>notion.so/my-integrations</span> 取得存取權杖
+              </div>
+            </div>
+
+            <div>
+              <Lbl>Notion 頁面網址</Lbl>
+              <input
+                value={pageUrl}
+                onChange={e=>handleUrl(e.target.value)}
+                placeholder="https://www.notion.so/xxxxxxxx..."
+              />
+              {pageId && (
+                <div style={{fontSize:10,color:P.green,marginTop:5}} className="mono">
+                  ✓ Page ID：{pageId}
+                </div>
+              )}
+              <div style={{fontSize:10,color:P.dim,marginTop:5,lineHeight:1.8}}>
+                在 Notion 開啟頁面 → 右上角分享 → 複製連結
+              </div>
+            </div>
+
+            <div style={{padding:"12px 14px",background:P.hi,borderRadius:4,border:`1px solid ${P.border}`}}>
+              <div className="mono" style={{fontSize:9,color:P.dim,letterSpacing:".08em",marginBottom:6}}>注意事項</div>
+              <div style={{fontSize:11,color:P.muted,lineHeight:1.9}}>
+                Token 只存在你的瀏覽器本機，不會上傳到任何地方。<br/>
+                換裝置時需要重新輸入一次。
+              </div>
+            </div>
+
+            <Btn variant="accent" full disabled={!canSave} onClick={()=>onSave(token.trim(), pageId.trim())}>
+              確認 / 開始使用
+            </Btn>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ──────────────────────────────────────────────
+function App() {
+  // 從 localStorage 讀取設定
+  const [notionToken,  setNotionToken]  = useState(() => localStorage.getItem(LS_TOKEN) || "");
+  const [notionPageId, setNotionPageId] = useState(() => localStorage.getItem(LS_PAGE)  || "");
+  const isSetup = notionToken && notionPageId;
+
+  const handleSetupSave = (token, pageId) => {
+    localStorage.setItem(LS_TOKEN, token);
+    localStorage.setItem(LS_PAGE,  pageId);
+    setNotionToken(token);
+    setNotionPageId(pageId);
+  };
+
+  const resetSetup = () => {
+    localStorage.removeItem(LS_TOKEN);
+    localStorage.removeItem(LS_PAGE);
+    setNotionToken(""); setNotionPageId("");
+  };
+
+  if (!isSetup) return <SetupScreen onSave={handleSetupSave}/>;
+  return <MainApp token={notionToken} pageId={notionPageId} onReset={resetSetup}/>;
+}
+
+// ── MAIN APP (after setup) ────────────────────────────────
+function MainApp({ token, pageId, onReset }) {
+  const demo = useMemo(()=>mkDemo(),[]);
+  const [styles,    setStyles]    = useState(demo.styles);
+  const [materials, setMaterials] = useState(demo.materials);
+  const [entries,   setEntries]   = useState(demo.entries);
+  const [tab,       setTab]       = useState("entry");
+  const [modal,     setModal]     = useState(null);
+  const [toast,     setToast]     = useState(null);
+  const [syncing,   setSyncing]   = useState(false);
+  const [lastSync,  setLastSync]  = useState(null);
+
+  const [newStyle,   setNewStyle]   = useState({code:"",name:"",colors:[]});
+  const [newMat,     setNewMat]     = useState({category:"拉鍊",name:"",unit:"條",spec:"",usagePerPiece:1});
+  const [sel,        setSel]        = useState({styleId:"",color:"",size:"M",materialId:"",pieces:10,usageOverride:""});
+  const [colorInput, setColorInput] = useState("");
+  const fileRef = useRef();
+
+  const toast$ = (msg, type="ok") => { setToast({msg,type}); setTimeout(()=>setToast(null),3500); };
+  const db = () => ({styles,materials,entries});
+
+  // ── Notion ──
+  const saveToNotion = async () => {
+    setSyncing(true);
+    try { await notionSave(pageId, token, db()); setLastSync(new Date()); toast$("已儲存至 Notion ✓"); }
+    catch(e) { toast$("儲存失敗："+e.message,"err"); }
+    finally { setSyncing(false); }
+  };
+
+  const loadFromNotion = async () => {
+    setSyncing(true);
+    try {
+      const d = await notionLoad(pageId, token);
+      if (!d) { toast$("Notion 尚無資料，請先儲存一次","warn"); return; }
+      if(d.styles)    setStyles(d.styles);
+      if(d.materials) setMaterials(d.materials);
+      if(d.entries)   setEntries(d.entries);
+      setLastSync(new Date()); toast$("已從 Notion 載入 ✓");
+    }
+    catch(e) { toast$("載入失敗："+e.message,"err"); }
+    finally { setSyncing(false); }
+  };
+
+  // ── JSON ──
+  const exportJSON = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(db(),null,2)],{type:"application/json"}));
+    a.download = `oqLiq_副料備份_${new Date().toISOString().slice(0,10)}.json`;
+    a.click(); toast$("JSON 備份已下載");
+  };
+  const importJSON = (e) => {
+    const f=e.target.files[0]; if(!f) return;
+    const r=new FileReader();
+    r.onload=(ev)=>{ try { const d=JSON.parse(ev.target.result); if(d.styles) setStyles(d.styles); if(d.materials) setMaterials(d.materials); if(d.entries) setEntries(d.entries); toast$("已載入 JSON ✓"); } catch { toast$("格式錯誤","err"); } };
+    r.readAsText(f); e.target.value="";
+  };
+
+  // ── CSV ──
+  const exportCSV = () => {
+    const esc=v=>`"${String(v??"").replace(/"/g,'""')}"`;
+    const rows=[["副料類型","副料名稱","規格","款號","顏色","尺寸","件數","每件用量","總用量","單位"]];
+    entries.forEach(e=>{
+      const mat=materials.find(m=>m.id===e.materialId), sty=styles.find(s=>s.id===e.styleId);
+      if(!mat||!sty) return;
+      const u=e.usageOverride??mat.usagePerPiece;
+      rows.push([mat.category,mat.name,mat.spec,sty.code,e.color,e.size,e.pieces,u,(e.pieces*u).toFixed(2),mat.unit]);
+    });
+    rows.push([]); rows.push(["── 副料匯總 ──"]); rows.push(["副料名稱","規格","總用量","單位"]);
+    summary.forEach(s=>rows.push([s.mat.name,s.mat.spec,s.totalUsage.toFixed(2),s.mat.unit]));
+    const csv=rows.map(r=>r.map(esc).join(",")).join("\n");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"}));
+    a.download=`oqLiq_副料統計_${new Date().toISOString().slice(0,10)}.csv`; a.click(); toast$("CSV 已匯出");
+  };
+
+  // ── 款式 ──
+  const addStyle = () => {
+    if(!newStyle.code.trim()||!newStyle.colors.length) return;
+    setStyles(p=>[...p,{id:uid(),...newStyle}]); setNewStyle({code:"",name:"",colors:[]}); setModal(null);
+  };
+
+  // ── 副料 ──
+  const addMaterial = () => {
+    if(!newMat.name.trim()) return;
+    setMaterials(p=>[...p,{id:uid(),...newMat,usagePerPiece:Number(newMat.usagePerPiece)||1}]);
+    setNewMat({category:"拉鍊",name:"",unit:"條",spec:"",usagePerPiece:1}); setModal(null);
+  };
+
+  // ── 需求 ──
+  const selStyle = styles.find(s=>s.id===sel.styleId);
+  const selMat   = materials.find(m=>m.id===sel.materialId);
+  const calcTotal = () => { if(!selMat) return "—"; const u=sel.usageOverride!==""?Number(sel.usageOverride):selMat.usagePerPiece; return (Number(sel.pieces)*u).toFixed(2); };
+
+  const addEntry = () => {
+    if(!sel.styleId||!sel.color||!sel.materialId||!sel.pieces) return;
+    const uo=sel.usageOverride!==""?Number(sel.usageOverride):undefined;
+    setEntries(p=>{
+      const ex=p.find(e=>e.styleId===sel.styleId&&e.color===sel.color&&e.size===sel.size&&e.materialId===sel.materialId);
+      if(ex) return p.map(e=>e===ex?{...e,pieces:Number(e.pieces)+Number(sel.pieces)}:e);
+      return [...p,{id:uid(),styleId:sel.styleId,color:sel.color,size:sel.size,materialId:sel.materialId,pieces:Number(sel.pieces),usageOverride:uo}];
+    });
+  };
+
+  // ── 匯總 ──
+  const summary = useMemo(()=>{
+    const map={};
+    entries.forEach(e=>{
+      const mat=materials.find(m=>m.id===e.materialId), sty=styles.find(s=>s.id===e.styleId);
+      if(!mat||!sty) return;
+      const u=e.usageOverride??mat.usagePerPiece, total=Number(e.pieces)*u;
+      if(!map[e.materialId]) map[e.materialId]={mat,byKey:{},totalPieces:0,totalUsage:0};
+      const k=`${sty.code}__${e.color}__${e.size}`;
+      if(!map[e.materialId].byKey[k]) map[e.materialId].byKey[k]={pieces:0,usage:0};
+      map[e.materialId].byKey[k].pieces+=Number(e.pieces); map[e.materialId].byKey[k].usage+=total;
+      map[e.materialId].totalPieces+=Number(e.pieces); map[e.materialId].totalUsage+=total;
+    });
+    return Object.values(map);
+  },[entries,materials,styles]);
+
+  const TABS=[["entry","需求登錄"],["summary","匯總"],["styles","款式"],["materials","副料"],["sync","備份同步"]];
+  const tabSt=k=>({padding:"6px 14px",fontFamily:"'Space Mono',monospace",fontSize:11,letterSpacing:".05em",background:tab===k?P.accent:"transparent",color:tab===k?"#000":P.muted,border:`1px solid ${tab===k?P.accent:P.border}`,borderRadius:3,cursor:"pointer",fontWeight:tab===k?700:400});
+
+  return (
+    <>
+      {toast && (
+        <div className="fadein" style={{position:"fixed",top:16,right:16,zIndex:999,background:toast.type==="err"?P.red:toast.type==="warn"?P.orange:P.accent,color:"#000",padding:"9px 18px",borderRadius:4,fontFamily:"'Space Mono',monospace",fontSize:11,fontWeight:700,letterSpacing:".05em",boxShadow:"0 4px 24px rgba(0,0,0,.6)"}}>
+          {toast.msg}
+        </div>
+      )}
+
+      <div style={{maxWidth:1100,margin:"0 auto",padding:"22px 18px"}}>
+
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:12}}>
+          <div>
+            <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+              <span className="mono" style={{fontSize:20,fontWeight:700,letterSpacing:"-.02em"}}>oqLiq</span>
+              <span className="mono" style={{fontSize:10,color:P.accent,letterSpacing:".18em"}}>MATERIAL TRACKER v3</span>
+            </div>
+            <div style={{fontSize:11,color:P.muted,marginTop:2}}>副料需求管理 / 顏色×尺寸×件數 / Notion 同步</div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            {lastSync && <span className="mono" style={{fontSize:10,color:P.dim}}>上次同步 {lastSync.toLocaleTimeString()}</span>}
+            <Btn small variant="green" onClick={loadFromNotion} disabled={syncing}>
+              {syncing?<span className="spin">↻</span>:"↓"} 從 Notion 載入
+            </Btn>
+            <Btn small variant="blue" onClick={saveToNotion} disabled={syncing}>
+              {syncing?<span className="spin">↻</span>:"↑"} 儲存至 Notion
+            </Btn>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div style={{display:"flex",gap:5,marginBottom:18,flexWrap:"wrap"}}>
+          {TABS.map(([k,v])=><button key={k} style={tabSt(k)} onClick={()=>setTab(k)}>{v}</button>)}
+        </div>
+
+        {/* ══ 需求登錄 ══ */}
+        {tab==="entry" && (
+          <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:14}}>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <Card>
+                <SecHead>新增需求</SecHead>
+                <div style={{display:"grid",gap:10}}>
+                  <div><Lbl>款式</Lbl>
+                    <select value={sel.styleId} onChange={e=>setSel(p=>({...p,styleId:e.target.value,color:""}))}>
+                      <option value="">— 選擇款式 —</option>
+                      {styles.map(s=><option key={s.id} value={s.id}>{s.code}  {s.name}</option>)}
+                    </select>
+                  </div>
+                  <div><Lbl>顏色</Lbl>
+                    {selStyle?.colors?.length
+                      ? <Toggle value={sel.color} onChange={v=>setSel(p=>({...p,color:v}))} options={selStyle.colors}/>
+                      : <div style={{fontSize:11,color:P.dim}}>請先選擇款式</div>}
+                  </div>
+                  <div><Lbl>尺寸</Lbl>
+                    <Toggle value={sel.size} onChange={v=>setSel(p=>({...p,size:v}))} options={SIZES}/>
+                  </div>
+                  <div><Lbl>副料</Lbl>
+                    <select value={sel.materialId} onChange={e=>setSel(p=>({...p,materialId:e.target.value,usageOverride:""}))}>
+                      <option value="">— 選擇副料 —</option>
+                      {MAT_CATS.map(cat=>{
+                        const mats=materials.filter(m=>m.category===cat); if(!mats.length) return null;
+                        return <optgroup key={cat} label={`── ${cat}`}>{mats.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>;
+                      })}
+                    </select>
+                  </div>
+                  <div><Lbl>件數（生產數量）</Lbl>
+                    <input type="number" min={1} step={1} value={sel.pieces} onChange={e=>setSel(p=>({...p,pieces:e.target.value}))}/>
+                  </div>
+                  {selMat && (
+                    <div style={{background:P.hi,borderRadius:4,padding:"10px 12px",border:`1px solid ${P.border}`}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                        <span style={{fontSize:11,color:P.muted}}>每件用量</span>
+                        <span className="tag tag-o">預設 {selMat.usagePerPiece} {selMat.unit}</span>
+                      </div>
+                      <input type="number" min={0.01} step={0.01} placeholder={`覆蓋預設值（${selMat.usagePerPiece}）`}
+                        value={sel.usageOverride} onChange={e=>setSel(p=>({...p,usageOverride:e.target.value}))}/>
+                      <div style={{marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <span style={{fontSize:11,color:P.muted}}>總需求</span>
+                        <span className="mono" style={{fontSize:16,fontWeight:700,color:P.accent}}>{calcTotal()} {selMat.unit}</span>
+                      </div>
+                    </div>
+                  )}
+                  <Btn variant="accent" full disabled={!sel.styleId||!sel.color||!sel.materialId||!sel.pieces} onClick={addEntry}>＋ 加入清單</Btn>
+                </div>
+              </Card>
+              <Card style={{background:"transparent",border:`1px dashed ${P.border}`}}>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  <Btn small onClick={()=>setModal("addStyle")}>＋ 款式</Btn>
+                  <Btn small onClick={()=>setModal("addMaterial")}>＋ 副料</Btn>
+                </div>
+                <div className="mono" style={{fontSize:10,color:P.dim,marginTop:7}}>{styles.length} 款式 / {materials.length} 副料 / {entries.length} 筆</div>
+              </Card>
+            </div>
+
+            <Card>
+              <SecHead right={<span className="tag">{entries.length} 筆</span>}>需求明細</SecHead>
+              {entries.length===0
+                ? <div style={{color:P.dim,textAlign:"center",padding:"40px 0",fontSize:12}}>尚無資料</div>
+                : <div className="scroll-x"><table>
+                    <thead><tr><th>款號</th><th>顏色</th><th>尺寸</th><th>副料</th><th>件數</th><th>每件用量</th><th>總量</th><th>單位</th><th></th></tr></thead>
+                    <tbody>
+                      {entries.map(e=>{
+                        const mat=materials.find(m=>m.id===e.materialId), sty=styles.find(s=>s.id===e.styleId);
+                        if(!mat||!sty) return null;
+                        const u=e.usageOverride??mat.usagePerPiece;
+                        return <tr key={e.id}>
+                          <td><span className="tag tag-g">{sty.code}</span></td>
+                          <td><span className="tag tag-b">{e.color}</span></td>
+                          <td><span className="tag">{e.size}</span></td>
+                          <td><div style={{fontSize:12}}>{mat.name}</div><div className="mono" style={{fontSize:10,color:P.dim}}>{mat.category}</div></td>
+                          <td className="mono">{e.pieces}</td>
+                          <td className="mono" style={{color:e.usageOverride!=null?P.orange:P.muted,fontSize:11}}>{u}{e.usageOverride!=null?" *":""}</td>
+                          <td className="mono" style={{color:P.accent,fontWeight:700}}>{(e.pieces*u).toFixed(2)}</td>
+                          <td style={{color:P.dim,fontSize:11}}>{mat.unit}</td>
+                          <td><button onClick={()=>setEntries(p=>p.filter(x=>x.id!==e.id))} style={{background:"transparent",color:P.dim,border:"none",cursor:"pointer",fontSize:16,padding:"0 4px"}}>×</button></td>
+                        </tr>;
+                      })}
+                    </tbody>
+                  </table></div>
+              }
+            </Card>
+          </div>
+        )}
+
+        {/* ══ 匯總 ══ */}
+        {tab==="summary" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+              <div style={{fontSize:11,color:P.muted}}>{summary.length} 種副料 / {entries.length} 筆 / {entries.reduce((a,e)=>a+Number(e.pieces),0)} 件</div>
+              <div style={{display:"flex",gap:6}}><Btn small onClick={exportCSV} disabled={!entries.length}>↓ CSV</Btn><Btn small variant="blue" onClick={saveToNotion} disabled={syncing||!entries.length}>↑ 儲存 Notion</Btn></div>
+            </div>
+            {summary.length===0
+              ? <Card><div style={{color:P.dim,textAlign:"center",padding:"40px 0",fontSize:12}}>尚無資料</div></Card>
+              : summary.map(s=>(
+                <Card key={s.mat.id} style={{marginBottom:10}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                    <div>
+                      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
+                        <span className="tag tag-g">{s.mat.category}</span>
+                        <span style={{fontWeight:500,fontSize:13}}>{s.mat.name}</span>
+                      </div>
+                      {s.mat.spec&&<div className="mono" style={{fontSize:10,color:P.dim}}>{s.mat.spec}</div>}
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div className="mono" style={{fontSize:24,fontWeight:700,color:P.accent}}>{s.totalUsage.toFixed(1)}</div>
+                      <div style={{fontSize:10,color:P.muted}}>{s.mat.unit}（總用量）</div>
+                      <div className="mono" style={{fontSize:10,color:P.dim}}>{s.totalPieces} 件</div>
+                    </div>
+                  </div>
+                  <hr className="div"/>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                    {Object.entries(s.byKey).map(([k,v])=>{
+                      const [code,color,size]=k.split("__");
+                      return <div key={k} style={{padding:"5px 10px",background:P.hi,borderRadius:3,border:`1px solid ${P.border}`}}>
+                        <span className="mono" style={{fontSize:10,color:P.muted}}>{code}</span>
+                        <span className="tag tag-b" style={{margin:"0 4px",fontSize:9}}>{color}</span>
+                        <span className="tag" style={{fontSize:9}}>{size}</span>
+                        <span className="mono" style={{marginLeft:8,color:P.accent,fontSize:11}}>× {v.usage.toFixed(2)}</span>
+                        <span style={{color:P.dim,fontSize:10,marginLeft:4}}>{s.mat.unit}</span>
+                      </div>;
+                    })}
+                  </div>
+                </Card>
+              ))
+            }
+          </div>
+        )}
+
+        {/* ══ 款式 ══ */}
+        {tab==="styles" && (
+          <div>
+            <div style={{marginBottom:10}}><Btn variant="accent" onClick={()=>setModal("addStyle")}>＋ 新增款式</Btn></div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {styles.map(s=>(
+                <Card key={s.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px"}}>
+                  <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+                    <span className="tag tag-g mono">{s.code}</span>
+                    <span style={{fontSize:13}}>{s.name}</span>
+                    {s.colors.map(c=><span key={c} className="tag tag-b">{c}</span>)}
+                  </div>
+                  <Btn small variant="danger" onClick={()=>setStyles(p=>p.filter(x=>x.id!==s.id))}>移除</Btn>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ══ 副料 ══ */}
+        {tab==="materials" && (
+          <div>
+            <div style={{marginBottom:10}}><Btn variant="accent" onClick={()=>setModal("addMaterial")}>＋ 新增副料</Btn></div>
+            {MAT_CATS.map(cat=>{
+              const mats=materials.filter(m=>m.category===cat); if(!mats.length) return null;
+              return <div key={cat} style={{marginBottom:14}}>
+                <div className="mono" style={{fontSize:9,color:P.muted,letterSpacing:".12em",marginBottom:5,textTransform:"uppercase"}}>── {cat}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                  {mats.map(m=>(
+                    <Card key={m.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 14px"}}>
+                      <div><div style={{fontSize:12,marginBottom:2}}>{m.name}</div>{m.spec&&<div className="mono" style={{fontSize:10,color:P.dim}}>{m.spec}</div>}</div>
+                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                        <span className="tag tag-o mono">×{m.usagePerPiece} {m.unit}/件</span>
+                        <Btn small variant="danger" onClick={()=>setMaterials(p=>p.filter(x=>x.id!==m.id))}>移除</Btn>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              </div>;
+            })}
+          </div>
+        )}
+
+        {/* ══ 備份同步 ══ */}
+        {tab==="sync" && (
+          <div style={{display:"grid",gap:14,maxWidth:560}}>
+            <Card>
+              <SecHead>Notion 同步</SecHead>
+              <div style={{fontSize:11,color:P.muted,marginBottom:14,lineHeight:1.9}}>
+                資料儲存在你的 Notion 頁面。<br/>
+                換裝置後按「從 Notion 載入」即可恢復所有資料。
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <Btn variant="green" onClick={loadFromNotion} disabled={syncing}>{syncing?"載入中…":"↓ 從 Notion 載入"}</Btn>
+                <Btn variant="blue" onClick={saveToNotion} disabled={syncing}>{syncing?"儲存中…":"↑ 儲存至 Notion"}</Btn>
+              </div>
+              {lastSync&&<div className="mono" style={{fontSize:10,color:P.dim,marginTop:10}}>上次同步：{lastSync.toLocaleString()}</div>}
+            </Card>
+            <Card>
+              <SecHead>JSON 本地備份</SecHead>
+              <div style={{fontSize:11,color:P.muted,marginBottom:12}}>額外備份一份 .json，雙重保險。</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <Btn onClick={exportJSON}>↓ 匯出 JSON</Btn>
+                <label style={{display:"inline-flex",alignItems:"center",gap:6,padding:"7px 16px",background:P.hi,border:`1px solid ${P.border}`,borderRadius:3,cursor:"pointer",fontSize:11,fontFamily:"'Space Mono',monospace",color:P.text}}>
+                  ↑ 載入 JSON<input ref={fileRef} type="file" accept=".json" onChange={importJSON} style={{display:"none"}}/>
+                </label>
+              </div>
+            </Card>
+            <Card style={{border:`1px solid rgba(255,64,64,.2)`}}>
+              <SecHead>重設連線</SecHead>
+              <div style={{fontSize:11,color:P.muted,marginBottom:12}}>清除本機儲存的 Token，重新輸入設定。</div>
+              <Btn variant="danger" onClick={()=>{ if(confirm("確定要重設？")) onReset(); }}>重設 Notion 連線</Btn>
+            </Card>
+          </div>
+        )}
+      </div>
+
+      {/* ── Modal 款式 ── */}
+      {modal==="addStyle" && (
+        <Modal title="新增款式" onClose={()=>setModal(null)}>
+          <div style={{display:"grid",gap:12}}>
+            <div><Lbl>款號</Lbl><input value={newStyle.code} onChange={e=>setNewStyle(p=>({...p,code:e.target.value}))} placeholder="26ST01"/></div>
+            <div><Lbl>款式名稱</Lbl><input value={newStyle.name} onChange={e=>setNewStyle(p=>({...p,name:e.target.value}))} placeholder="Tech Shirt"/></div>
+            <div>
+              <Lbl>顏色（至少選一個）</Lbl>
+              <MultiToggle values={newStyle.colors} onChange={v=>setNewStyle(p=>({...p,colors:v}))} options={COLORS_PRESET}/>
+              <div style={{display:"flex",gap:6,marginTop:8}}>
+                <input value={colorInput} onChange={e=>setColorInput(e.target.value)} placeholder="自訂顏色（Enter 確認）"
+                  onKeyDown={e=>{if(e.key==="Enter"&&colorInput.trim()){setNewStyle(p=>({...p,colors:[...p.colors,colorInput.trim()]}));setColorInput("");}}}/>
+                <Btn small onClick={()=>{if(colorInput.trim()){setNewStyle(p=>({...p,colors:[...p.colors,colorInput.trim()]}));setColorInput("");}}}>＋</Btn>
+              </div>
+              {newStyle.colors.length>0&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:8}}>
+                {newStyle.colors.map(c=><span key={c} className="tag tag-b" style={{cursor:"pointer"}} onClick={()=>setNewStyle(p=>({...p,colors:p.colors.filter(x=>x!==c)}))}>
+                  {c} ×
+                </span>)}
+              </div>}
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <Btn onClick={()=>setModal(null)}>取消</Btn>
+              <Btn variant="accent" onClick={addStyle} disabled={!newStyle.code.trim()||!newStyle.colors.length}>確認新增</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Modal 副料 ── */}
+      {modal==="addMaterial" && (
+        <Modal title="新增副料" onClose={()=>setModal(null)}>
+          <div style={{display:"grid",gap:12}}>
+            <div><Lbl>副料類型</Lbl>
+              <select value={newMat.category} onChange={e=>setNewMat(p=>({...p,category:e.target.value}))}>
+                {MAT_CATS.map(c=><option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div><Lbl>副料名稱</Lbl><input value={newMat.name} onChange={e=>setNewMat(p=>({...p,name:e.target.value}))} placeholder="YKK 5號 開尾 20cm 黑"/></div>
+            <div><Lbl>規格 / 備註</Lbl><input value={newMat.spec} onChange={e=>setNewMat(p=>({...p,spec:e.target.value}))} placeholder="5# open-end 20cm black"/></div>
+            <div><Lbl>計算單位</Lbl><Toggle value={newMat.unit} onChange={v=>setNewMat(p=>({...p,unit:v}))} options={UNITS}/></div>
+            <div>
+              <Lbl>每件用量（預設值）</Lbl>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <input type="number" min={0.01} step={0.01} value={newMat.usagePerPiece} onChange={e=>setNewMat(p=>({...p,usagePerPiece:e.target.value}))} style={{width:100}}/>
+                <span style={{fontSize:12,color:P.muted}}>{newMat.unit} / 件</span>
+              </div>
+              <div style={{fontSize:10,color:P.dim,marginTop:4}}>扣子 4 顆/件、拉鍊 1 條/件、布料 1.2 米/件</div>
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <Btn onClick={()=>setModal(null)}>取消</Btn>
+              <Btn variant="accent" onClick={addMaterial} disabled={!newMat.name.trim()}>確認新增</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
